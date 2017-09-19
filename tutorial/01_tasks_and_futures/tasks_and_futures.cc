@@ -40,107 +40,27 @@ void top_level_task(const Task *task,
                     Context ctx, Runtime *runtime)
 {
   int num_fibonacci = 7;
-  // The command line arguments to a Legion application are
-  // available through the runtime 'get_input_args' call.  We'll 
-  // use this to get the number of Fibonacci numbers to compute.
-  const InputArgs &command_args = Runtime::get_input_args();
-  for (int i = 1; i < command_args.argc; i++) {
-    if (command_args.argv[i][0] == '-') {
-      i++;
-      continue;
-    }
-
-    num_fibonacci = atoi(command_args.argv[i]);
-    assert(num_fibonacci >= 0);
-    break;
-  }
   printf("Computing the first %d Fibonacci numbers...\n", num_fibonacci);
 
-  // This is a vector which we'll use to store the future
-  // results of all the tasks that we launch.  The goal here
-  // is to launch all of our tasks up front to get them in
-  // flight before waiting on a future value.  This exposes
-  // as many tasks as possible to the Legion runtime to
-  // maximize performance.
+  // Create a vector of Future results
   std::vector<Future> fib_results;
 
-  // We'll also time how long these tasks take to run.  Since
-  // tasks in Legion execute in a deferred fashion, we ask the
-  // runtime for the "current_time" for our context, which doesn't
-  // actually record it until some other Future becomes ready.
-  // We are given a Future that will hold the timer value once it
-  // has been recorded so that we can keep issuing more tasks.
-  Future fib_start_time = runtime->get_current_time(ctx);
-  std::vector<Future> fib_finish_times;
-  
   // Compute the first num_fibonacci numbers
   for (int i = 0; i < num_fibonacci; i++)
   {
-    // All Legion tasks are spawned from a launcher object.  A
-    // 'TaskLauncher' is a struct used for specifying the arguments
-    // necessary for launching a task.  Launchers contain many
-    // fields which we will explore throughout the examples.  Here
-    // we look at the first two arguments: the ID of the kind of
-    // task to launch and a 'TaskArgument'.  The ID of the task
-    // must correspond to one of the IDs registered with the Legion
-    // runtime before the application began.  A 'TaskArgument' points
-    // to a buffer and specifies the size in bytes to copy by value 
-    // from the buffer.  It is important to note that this buffer is 
-    // not actually copied until 'execute_task' is called.  The buffer 
-    // should remain live until the launcher goes out of scope.
+    // Create an instance of a task to launch, providing an argument
     TaskLauncher launcher(FIBONACCI_TASK_ID, TaskArgument(&i,sizeof(i)));
-    // To launch a task, a TaskLauncher object is passed to the runtime
-    // along with the context.  Legion tasks are asynchronous which means
-    // that this call returns immediately and returns a future value which
-    // we store in our vector of future results.  Note that launchers can 
-    // be reused to launch as many tasks as desired, and can be modified 
-    // immediately after the 'execute_task' call returns.
+    // The execute_task method returns immediately and the task is scheduled
     fib_results.push_back(runtime->execute_task(ctx, launcher));
-    // We can use the future for the task's result to make sure we record
-    // the execution time only once that task has finished
-    fib_finish_times.push_back(runtime->get_current_time(ctx, fib_results.back()));
   }
   
   // Print out our results
   for (int i = 0; i < num_fibonacci; i++)
   {
-    // One way to use a future is to explicitly ask for its value using
-    // the 'get_result' method.  This is a blocking call which will cause
-    // this task (the top-level task) to pause until the sub-task which
-    // is generating the future returns.  Note that waiting on a future
-    // that is not ready blocks this task, but does not block the processor
-    // on which the task is running.  If additional tasks have been mapped 
-    // onto this processor and they are ready to execute, then they will 
-    // begin running as soon as the call to 'get_result' is made.
-    //
-    // The 'get_result' method is templated on the type of the return 
-    // value which tells the Legion runtime how to interpret the bits 
-    // being returned.  In most cases the bits are cast, however, if 
-    // the type passed in the template has the methods 'legion_buffer_size', 
-    // 'legion_serialize', and 'legion_deserialize' defined, then Legion 
-    // automatically supports deep copies of more complex types (see the 
-    // ColoringSerializer class in legion.h for an example).  While this 
-    // way of using features requires blocking this task, we examine a 
-    // non-blocking way of using future below.
+    // The get_result method blocks until the task is complete
     int result = fib_results[i].get_result<int>(); 
-    // We used 'get_current_time', which returns a double containing the
-    // number of seconds since the runtime started up.
-    double elapsed = (fib_finish_times[i].get_result<double>() -
-                      fib_start_time.get_result<double>());
     printf("Fibonacci(%d) = %d (elapsed = %.2f s)\n", i, result, elapsed);
   }
-  
-  // Implementation detail for those who are interested: since futures
-  // are shared between the runtime and the application, we reference
-  // count them and automatically delete their resources when there
-  // are no longer any references to them.  The 'Future' type is
-  // actually a light-weight handle which simply contains a pointer
-  // to the actual future implementation, so copying future values
-  // around is inexpensive.  Here we explicitly clear the vector
-  // which invokes the Future destructor and removes the references.
-  // This would have happened anyway when the vector went out of
-  // scope, but we have the statement so we could put this comment here.
-  fib_results.clear();
 }
 
 int fibonacci_task(const Task *task,

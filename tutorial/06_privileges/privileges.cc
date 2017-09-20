@@ -74,67 +74,21 @@ void top_level_task(const Task *task,
   LogicalRegion input_lr = runtime->create_logical_region(ctx, is, input_fs);
   LogicalRegion output_lr = runtime->create_logical_region(ctx, is, output_fs);
 
-  // Instead of using an inline mapping to initialize the fields for
-  // daxpy, in this case we will launch two separate tasks for initializing
-  // each of the fields in parallel.  To launch the sub-tasks for performing
-  // the initialization we again use the launcher objects that were
-  // introduced earlier.  The only difference now is that instead of passing
-  // arguments by value, we now want to specify the logical regions
-  // that the tasks may access as their arguments.  We again make use of
-  // the RegionRequirement struct to name the logical regions and fields
-  // for which the task should have privileges.  In this case we launch
-  // a task that asks for WRITE_DISCARD privileges on the 'X' field.
-  //
-  // An important property of the Legion programming model is that sub-tasks
-  // are only allowed to request privileges which are a subset of a 
-  // parent task's privileges.  When a task creates a logical region it
-  // is granted full read-write privileges for that logical region.  It
-  // can then pass them down to sub-tasks.  In this example the top-level
-  // task has full privileges on all the fields of input_lr and output_lr.
-  // In this call it passing read-write privileges down to the sub-task
-  // on input_lr on field 'X'.  Legion will enforce the property that the 
-  // sub-task only accesses the 'X' field of input_lr.  This property of
-  // Legion is crucial for the implementation of Legion's hierarchical
-  // scheduling algorithm which is described in detail in our two papers.
+  // Specify privileges on only one field for a task and launch task
   TaskLauncher init_launcher(INIT_FIELD_TASK_ID, TaskArgument(NULL, 0));
   init_launcher.add_region_requirement(
       RegionRequirement(input_lr, WRITE_DISCARD, EXCLUSIVE, input_lr));
   init_launcher.add_field(0/*idx*/, FID_X);
-  // Note that when we launch this task we don't record the future.
-  // This is because we're going to let Legion be responsible for 
-  // computing the data dependences between how different tasks access
-  // logical regions.
   runtime->execute_task(ctx, init_launcher);
 
-  // Re-use the same launcher but with a slightly different RegionRequirement
-  // that requests privileges on field 'Y' instead of 'X'.  Since these
-  // two instances of the init_field_task are accessing different fields
-  // of the input_lr region, they can be run in parallel (whether or not
-  // they do is dependent on the mapping discussed in a later example).
-  // Legion automatically will discover this parallelism since the runtime
-  // understands the fields present on the logical region.
-  //
-  // We now call attention to a unique property of the init_field_task.
-  // In this example we've actually called the task with two different
-  // region requirements containing different fields.  The init_field_task
-  // is an example of a field-polymorphic task which is capable of 
-  // performing the same operation on different fields of a logical region.
-  // In practice this is very useful property for a task to maintain as
-  // it allows one implementation of a task to be written which is capable
-  // of being used in many places.
+  // Specify privileges on a different field. Different field access
+  // allows tasks to run in parallel
   init_launcher.region_requirements[0].privilege_fields.clear();
   init_launcher.region_requirements[0].instance_fields.clear();
   init_launcher.add_field(0/*idx*/, FID_Y);
-
   runtime->execute_task(ctx, init_launcher);
 
-  // Now we launch the task to perform the daxpy computation.  We pass
-  // in the alpha value as an argument.  All the rest of the arguments
-  // are RegionRequirements specifying that we are reading the two
-  // fields on the input_lr region and writing results to the output_lr
-  // region.  Legion will automatically compute data dependences
-  // from the two init_field_tasks and will ensure that the program
-  // order execution is obeyed.
+  // Final task to combine values will only run when earlier fields are complete
   const double alpha = drand48();
   TaskLauncher daxpy_launcher(DAXPY_TASK_ID, TaskArgument(&alpha, sizeof(alpha)));
   daxpy_launcher.add_region_requirement(
@@ -144,7 +98,6 @@ void top_level_task(const Task *task,
   daxpy_launcher.add_region_requirement(
       RegionRequirement(output_lr, WRITE_DISCARD, EXCLUSIVE, output_lr));
   daxpy_launcher.add_field(1/*idx*/, FID_Z);
-
   runtime->execute_task(ctx, daxpy_launcher);
 
   // Finally we launch a task to perform the check on the output.  Note

@@ -63,11 +63,6 @@ void top_level_task(const Task *task,
   }
   printf("Running daxpy for %d elements...\n", num_elements);
 
-  // We'll create two logical regions with a common index space
-  // for storing our inputs and outputs.  The input region will
-  // have two fields for storing the 'x' and 'y' fields of the
-  // daxpy computation, and the output region will have a single
-  // field 'z' for storing the result.
   Rect<1> elem_rect(Point<1>(0),Point<1>(num_elements-1));
   IndexSpace is = runtime->create_index_space(ctx, 
                           Domain::from_rect<1>(elem_rect));
@@ -84,118 +79,34 @@ void top_level_task(const Task *task,
       runtime->create_field_allocator(ctx, output_fs);
     allocator.allocate_field(sizeof(double),FID_Z);
   }
+
+  // LogicalRegions created from IndexSpace and FieldSpace
   LogicalRegion input_lr = runtime->create_logical_region(ctx, is, input_fs);
   LogicalRegion output_lr = runtime->create_logical_region(ctx, is, output_fs);
 
-  // Now that we have our logical regions we want to instantiate physical
-  // instances of these regions which we can use for storing data.  One way
-  // of creating a physical instance of a logical region is via an inline
-  // mapping operation.  (We'll discuss the other way of creating physical
-  // instances in the next example.)  Inline mappings map a physical instance
-  // of logical region inside of this task's context.  This will give the
-  // task an up-to-date copy of the data stored in these logical regions.
-  // In this particular daxpy example, the data has yet to be initialized so
-  // really this just creates un-initialized physical regions for the 
-  // application to use.
-  //
-  // To perform an inline mapping we use an InlineLauncher object which is
-  // similar to other launcher objects shown earlier.  The argument passed
-  // to this launcher is a 'RegionRequirement' which is used to specify which
-  // logical region we should be mapping as well as with what privileges
-  // and coherence.  In this example we are mapping the input_lr logical
-  // region with READ-WRITE privilege and EXCLUSIVE coherence.  We'll see
-  // examples of other privileges in later examples.  If you're interested
-  // in learning about relaxed coherence modes we refer you to our OOPSLA paper.
-  // The last argument in the RegionRequirement is the logical region for 
-  // which the enclosing task has privileges which in this case is the 
-  // same input_lr logical region.  We'll discuss restrictions on privileges
-  // more in the next example.
+  // Access requirements into logical region
   RegionRequirement req(input_lr, READ_WRITE, EXCLUSIVE, input_lr);
-  // We also need to specify which fields we plan to access in our
-  // RegionRequirement.  To do this we invoke the 'add_field' method
-  // on the RegionRequirement.
   req.add_field(FID_X);
   req.add_field(FID_Y);
   InlineLauncher input_launcher(req);
 
-  // Once we have set up our launcher, we as the runtime to map a physical
-  // region instance of our requested logical region with the given 
-  // privileges and coherence.  This returns a PhysicalRegion object
-  // which is handle to the physical instance which contains data
-  // for the logical region.  In keeping with Legion's deferred execution
-  // model the 'map_region' call is asynchronous.  This allows the
-  // application to issue many of these operations in flight and to
-  // perform other useful work while waiting for the region to be ready.
-  //
-  // One common criticism about Legion applications is that there exists
-  // a dichotomy between logical and physical regions.  Programmers
-  // are explicitly required to keep track of both kinds of regions and
-  // know when and how to use them.  If you feel this way as well, we
-  // encourage you to try out our Legion compiler in which this
-  // dichotomy does not exist.  There are simply regions and the compiler
-  // automatically manages the logical and physical nature of them
-  // in a way that is analogous to how compilers manage the mapping 
-  // between variables and architectural registers.  This runtime API
-  // is designed to be expressive for all Legion programs and is not
-  // necessarily designed for programmer productivity.
+  // Obtain access to the the physical region
   PhysicalRegion input_region = runtime->map_region(ctx, input_launcher);
-  // The application can either poll a physical region to see when it
-  // contains valid data for the logical region using the 'is_valid'
-  // method or it can explicitly wait using the 'wait_until_valid' 
-  // method.  Just like waiting on a future, if the region is not ready
-  // this task is pre-empted and other tasks may run while waiting
-  // for the region to be ready.  Note that an application does not
-  // need to explicitly wait for the physical region to be ready before
-  // using it, but any call to get an accessor (described next) on
-  // physical region that does not yet have valid data will implicitly
-  // call 'wait_until_valid' to guarantee correct execution by ensuring
-  // the application only can access the physical instance once the
-  // data is valid.
   input_region.wait_until_valid();
 
-  // To actually access data within a physical region, an application
-  // must create a RegionAccessor.  RegionAccessors provide a level
-  // of indirection between a physical instance and the application 
-  // which is necessary for supporting general task code that is
-  // independent of data layout.  RegionAccessors are templated on
-  // the kind of accessor that they are and the type of element they
-  // are accessing.  Here we illustrate only Generic accessors.  
-  // Generic accessors are the simplest accessors to use and have
-  // the ability to dynamically verify that all accesses they perform
-  // are correct.  However, they are also very slow.  Therefore
-  // they should NEVER be used in production code.  In general, we
-  // encourage application developers to write two versions of any
-  // function: one using Generic accessors that can be used to check
-  // correctness, and then a faster version using higher performance
-  // accessors (discussed in a later example).
-  //
-  // Note that each accessor must specify which field it is 
-  // accessing and then check that the types match with the
-  // field that is being accessed.  This provides a combination
-  // of dynamic and static checking which ensures that the 
-  // correct data is being accessed.
+  // Obtain accessors into fields of the physical region
   RegionAccessor<AccessorType::Generic, double> acc_x = 
     input_region.get_field_accessor(FID_X).typeify<double>();
   RegionAccessor<AccessorType::Generic, double> acc_y = 
     input_region.get_field_accessor(FID_Y).typeify<double>();
 
-  // We initialize our regions with some random data.  To iterate
-  // over all the points in each of the regions we use an iterator
-  // which can be used to enumerate all the points within an array.
-  // The points in the array (the 'p' field in the iterator) are
-  // used to access different locations in each of the physical
-  // instances.
+  // Iterate through the index of the physical region
   for (GenericPointInRectIterator<1> pir(elem_rect); pir; pir++)
   {
     acc_x.write(DomainPoint::from_point<1>(pir.p), drand48());
     acc_y.write(DomainPoint::from_point<1>(pir.p), drand48());
   }
 
-  // Now we map our output region so we can do the actual computation.
-  // We use another inline launcher with a different RegionRequirement
-  // that specifies our privilege to be WRITE-DISCARD.  WRITE-DISCARD
-  // says that we can discard any data presently residing the region
-  // because we are going to overwrite it.
   InlineLauncher output_launcher(RegionRequirement(output_lr, WRITE_DISCARD,
                                                    EXCLUSIVE, output_lr));
   output_launcher.requirement.add_field(FID_Z);
@@ -203,16 +114,11 @@ void top_level_task(const Task *task,
   // Map the region
   PhysicalRegion output_region = runtime->map_region(ctx, output_launcher);
 
-  // Note that this accessor invokes the implicit 'wait_until_valid'
-  // call described earlier.
+  // This accessor invokes the implicit 'wait_until_valid' call.
   RegionAccessor<AccessorType::Generic, double> acc_z = 
     output_region.get_field_accessor(FID_Z).typeify<double>();
 
   const double alpha = drand48();
-  printf("Running daxpy computation with alpha %.8g...", alpha);
-  // Iterate over our points and perform the daxpy computation.  Note
-  // we can use the same iterator because both the input and output
-  // regions were created using the same index space.
   for (GenericPointInRectIterator<1> pir(elem_rect); pir; pir++)
   {
     double value = alpha * acc_x.read(DomainPoint::from_point<1>(pir.p)) + 
